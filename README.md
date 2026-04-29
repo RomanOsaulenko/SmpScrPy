@@ -1,2 +1,4 @@
 # SmpScrPy
-Simple async lib scrapper for python 3 details after tests finish
+A simple asynchronous Python Lib scraper for YAML feeds. Details will be available after all tests are complete.
+# Requirements
+aiohttp, selectolax.lexbor 
