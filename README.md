@@ -1,2 +1,2 @@
 # SmpScrPy
-Simple lib scrapper for python 3
+Simple async lib scrapper for python 3 details after tests finish
