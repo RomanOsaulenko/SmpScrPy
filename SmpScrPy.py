@@ -26,7 +26,6 @@ class FastAsyncQueueHandler(logging.handlers.QueueHandler):
             self.handleError(record)
 
 
-
 class SmpScr:
     __XML_FILE_FULL_NAME = "smp_scr.xlm"                            #назва xml файлу
     __CATEGORY_PREF_ID = "cat"                                      #префікс id поля category
@@ -37,6 +36,10 @@ class SmpScr:
     __OFFER_XML_FIELD_NAME: "offer"                                 #назва поля offer
     __TMP_CATEGORY_XML_FNAME = f"{uuid.uuid4().hex}cat.xml.tmp"     #тимчасовий файл для збереження даних категорії
     __TMP_OFFER_XML_F_NAME = f"{uuid.uuid4().hex}off.xml.tmp"       #тимчасовий файл для збереження даних товарів
+
+    __K_PROPS = f"P{uuid.uuid4().hex}"                              #мітка у словнику данних властивості поля
+    __K_SELF = f"S{uuid.uuid4().hex}"                               #мітка у словнику данних властивості поля, містить назву поля
+    __K_TEXT = f"T{uuid.uuid4().hex}"
     __DEF_ENCODE = "utf-8-sig"                                      #кодування файлів за замовчуванням
 
     __LOG_FILE_FULL_NAME = "smp_scr.log"                            #назва файлу для логів
@@ -51,7 +54,8 @@ class SmpScr:
 
     __OFFER_SCRAPERS_CNT = 4                                        #кількість скраперів інформації товарів
     __CATEGORY_SCRAPERS_CNT = 1                                     #кількість скрапенів категорій
-    __DEF_TIMEOUT = 10                                              #час очікування відповіді
+    __DEF_TIMEOUT = 10                                              #час очікування відповіді за замовчуванням
+    __TIMEOUT = aiohttp.ClientTimeout(total=__DEF_TIMEOUT)          #параметр тайм-ауту
     __DEF_MAX_SLEEP = 3                                             #максимальний час для сну
     __MAX_GET_TRIES = 180                                           #кількість повторів запитів
     __HEADERS = {                                                   #заголовки для простої симуляції браузера
@@ -68,9 +72,9 @@ class SmpScr:
     }
 
     __category_lnk_que = asyncio.Queue()                           #черга інформації про посилання категорії, містить словник: url, id, батьківське id
-    __category_data_que = asyncio.Queue()                          #черга інформації про категорії, яка оборобляється в __categories_collect
+    __category_data_que = SimpleQueue()                          #черга інформації про категорії, яка оборобляється в __categories_collect
     __offer_lnk_que = asyncio.Queue()                              #черга інформації про посилання на товар, містить словник: url, id, cat_id, available
-    __offer_data_que = asyncio.Queue()                             #черга інформації про товар, яка оборобляється в  __offers_collect
+    __offer_data_que = SimpleQueue()                             #черга інформації про товар, яка оборобляється в  __offers_collect
 
 
     def __init__(self, conf_file:str = "cfg"):
@@ -80,6 +84,7 @@ class SmpScr:
             #update parameters from config file
             print("Tries to update config parameters from file")
             self.__update_params(conf_file)
+        self.__TIMEOUT = aiohttp.ClientTimeout(total=self.__DEF_TIMEOUT)
         #setup loggin and start it
         self.__setup_logging()
 
@@ -268,12 +273,44 @@ class SmpScr:
         )
         self.__log_listener.start()
 
+    async def __raw_xml_data_to_str(self, Data: dict, pref:str = "\t") -> str:
+        rez = ""
+        t_props : dict | None = Data.get(self.__K_PROPS, None)
+        if t_props is None:
+            return ""
+        Data.pop(self.__K_PROPS)
 
-    async def __categories_collect(self):
+        m_fild_name : str | None =  t_props.get(self.__K_SELF, None)
+        if m_fild_name is None:
+            return ""
+        t_props.pop(self.__K_SELF)
+        m_fild_name = self.sanitize_xml_string(m_fild_name)
+        rez += f"{pref}<{m_fild_name} "
+        for key in t_props.keys():
+            rez += f'{self.sanitize_xml_string(key)}="{self.sanitize_xml_string(t_props[key])}" '
+        rez += f">{self.sanitize_xml_string( t_props.get(self.__K_TEXT,"") )}\n"
+
+        new_pref : str = pref +'\t'
+
+        for key in Data.keys():
+            if isinstance( Data[key], dict ):
+                rez += self.__raw_xml_data_to_str(Data[key], new_pref)
+            s_key = self.sanitize_xml_string(key)
+            if self.is_url( Data[key] ):
+                rez += f'{new_pref}<{s_key}>{self.sanitize_url(Data[key])}</{s_key}>\n'
+            else:
+                rez += f'{new_pref}<{s_key}>{self.sanitize_xml_string(Data[key])}</{s_key}>\n'
+
+        #params
+
+        rez+= f"{pref}</{m_fild_name}>\n"
+        return rez
+    #
+    async def __categories_collect_to_xml(self):
         print ("Category collector")
 
 
-    async def __offers_collect(self):
+    async def __offers_collect_to_xml(self):
         print ("Category collector")
 
     #запуск скрапера на виконня
@@ -289,17 +326,27 @@ class SmpScr:
     async def __get_offer_data(self):
         print("Get offer data")
 
-    async def __unite_xml(self):
+    async def __unite_xmls(self):
         print("Unite data to xml file")
 
     #!override it
     async def __init_categories_lnks (self, url:str):
         print (f"Get categories links {url}")
 
+    def is_url(text: str, *, allowed_schemes: set[str] | None = None) -> bool:
+        if allowed_schemes is None:
+            allowed_schemes = {"http", "https", "ftp", "ftps"}
+        try:
+            result = urlparse(text)
+            # вимагаємо схему, мережеве розташування і дозволену схему
+            return all([result.scheme, result.netloc]) and result.scheme in allowed_schemes
+        except Exception:
+            return False
+
+
     def sanitize_url(self, url: str, remove_trailing_slash: bool = True) -> str:
         if not url:
             return ""
-
         # 1. Unicode Нормалізація
         # Зводить різні бітові представлення однакових символів до єдиного стандарту
         url = unicodedata.normalize('NFC', url)
@@ -381,9 +428,9 @@ class SmpScr:
             char = match.group(0)
             return escape_map.get(char, char)
 
-        return xml_valid_pattern.sub(replacer, some_string)
+        return (xml_valid_pattern.sub(replacer, some_string)).strip()
 
-    def finish(self):
+    async def finish(self):
         # send general info to telegram
 
         # finish logging
@@ -396,7 +443,4 @@ class SmpScr:
     def __del__(self): #destructor
         #self.finish()
         print("on Close methond")
-
-
-
 
